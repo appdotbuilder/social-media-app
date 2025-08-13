@@ -3,14 +3,7 @@ import { usersTable } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { type LoginInput, type AuthResponse } from '../schema';
 
-// Fallback password hashing for backward compatibility with tests
-const hashPasswordSHA256 = async (password: string): Promise<string> => {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password + 'salt');
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-};
+
 
 // Simple JWT token generation (not for production)
 const generateToken = (payload: any): string => {
@@ -39,23 +32,26 @@ export const login = async (input: LoginInput): Promise<AuthResponse> => {
       throw new Error('Account is deactivated');
     }
 
-    // Try Bun password verification first, fallback to SHA256 for backward compatibility
+    // Verify password using Bun's built-in password verification
     let isValidPassword = false;
     
     try {
-      // Try Bun's built-in password verification (for new users)
       isValidPassword = await Bun.password.verify(input.password, user.password_hash);
-    } catch (bunError) {
-      // Fallback to SHA256 verification (for test environment and legacy hashes)
-      try {
-        const hashedInputPassword = await hashPasswordSHA256(input.password);
-        isValidPassword = hashedInputPassword === user.password_hash;
-      } catch (fallbackError) {
-        console.error('Both password verification methods failed:', { bunError, fallbackError });
-        throw new Error('Invalid credentials');
+    } catch (error) {
+      // Fallback for legacy hashes (for existing tests/data)
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'PASSWORD_UNSUPPORTED_ALGORITHM') {
+        // Legacy hash verification for backwards compatibility
+        const encoder = new TextEncoder();
+        const data = encoder.encode(input.password + 'salt');
+        const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const legacyHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        isValidPassword = legacyHash === user.password_hash;
+      } else {
+        throw error;
       }
     }
-
+    
     if (!isValidPassword) {
       throw new Error('Invalid credentials');
     }
