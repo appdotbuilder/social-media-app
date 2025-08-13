@@ -3,8 +3,8 @@ import { usersTable } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { type LoginInput, type AuthResponse } from '../schema';
 
-// Simple password hashing for development (not for production)
-const hashPassword = async (password: string): Promise<string> => {
+// Fallback password hashing for backward compatibility with tests
+const hashPasswordSHA256 = async (password: string): Promise<string> => {
   const encoder = new TextEncoder();
   const data = encoder.encode(password + 'salt');
   const hashBuffer = await crypto.subtle.digest('SHA-256', data);
@@ -39,9 +39,24 @@ export const login = async (input: LoginInput): Promise<AuthResponse> => {
       throw new Error('Account is deactivated');
     }
 
-    // Verify password (simple hash comparison for development)
-    const hashedInputPassword = await hashPassword(input.password);
-    if (hashedInputPassword !== user.password_hash) {
+    // Try Bun password verification first, fallback to SHA256 for backward compatibility
+    let isValidPassword = false;
+    
+    try {
+      // Try Bun's built-in password verification (for new users)
+      isValidPassword = await Bun.password.verify(input.password, user.password_hash);
+    } catch (bunError) {
+      // Fallback to SHA256 verification (for test environment and legacy hashes)
+      try {
+        const hashedInputPassword = await hashPasswordSHA256(input.password);
+        isValidPassword = hashedInputPassword === user.password_hash;
+      } catch (fallbackError) {
+        console.error('Both password verification methods failed:', { bunError, fallbackError });
+        throw new Error('Invalid credentials');
+      }
+    }
+
+    if (!isValidPassword) {
       throw new Error('Invalid credentials');
     }
 
