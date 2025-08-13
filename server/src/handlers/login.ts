@@ -1,28 +1,68 @@
+import { db } from '../db';
+import { usersTable } from '../db/schema';
+import { eq } from 'drizzle-orm';
 import { type LoginInput, type AuthResponse } from '../schema';
 
+// Simple password hashing for development (not for production)
+const hashPassword = async (password: string): Promise<string> => {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + 'salt');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+};
+
+// Simple JWT token generation (not for production)
+const generateToken = (payload: any): string => {
+  const header = btoa(JSON.stringify({ alg: 'none', typ: 'JWT' }));
+  const payloadStr = btoa(JSON.stringify({ ...payload, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 }));
+  return `${header}.${payloadStr}.signature`;
+};
+
 export const login = async (input: LoginInput): Promise<AuthResponse> => {
-  // This is a placeholder implementation! Real code should be implemented here.
-  // The goal of this handler is authenticating user credentials and returning JWT token.
-  // Should verify password hash and generate secure JWT token.
-  return Promise.resolve({
-    user: {
-      id: 1,
-      username: 'placeholder_user',
-      email: input.email,
-      password_hash: 'hashed_password',
-      full_name: 'Placeholder User',
-      bio: null,
-      profile_picture_url: null,
-      followers_count: 0,
-      following_count: 0,
-      balance: 0,
-      is_premium: false,
-      premium_expires_at: null,
-      is_admin: false,
-      is_active: true,
-      created_at: new Date(),
-      updated_at: new Date(),
-    },
-    token: 'jwt_token_placeholder'
-  } as AuthResponse);
+  try {
+    // Find user by email
+    const users = await db.select()
+      .from(usersTable)
+      .where(eq(usersTable.email, input.email))
+      .limit(1)
+      .execute();
+
+    if (users.length === 0) {
+      throw new Error('Invalid credentials');
+    }
+
+    const user = users[0];
+
+    // Check if user is active
+    if (!user.is_active) {
+      throw new Error('Account is deactivated');
+    }
+
+    // Verify password (simple hash comparison for development)
+    const hashedInputPassword = await hashPassword(input.password);
+    if (hashedInputPassword !== user.password_hash) {
+      throw new Error('Invalid credentials');
+    }
+
+    // Generate simple JWT token
+    const token = generateToken({
+      userId: user.id,
+      email: user.email,
+      isAdmin: user.is_admin,
+      isPremium: user.is_premium
+    });
+
+    // Convert numeric fields to numbers before returning
+    return {
+      user: {
+        ...user,
+        balance: parseFloat(user.balance)
+      },
+      token
+    };
+  } catch (error) {
+    console.error('Login failed:', error);
+    throw error;
+  }
 };
